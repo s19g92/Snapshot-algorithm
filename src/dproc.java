@@ -40,6 +40,7 @@ class dproc {
 	static int hello_count = 0;
 	static boolean recvd_compute = false;
 	static int[] Sent;
+	static boolean reg_complete = false;
 	static int[] Recvd;
 	static Socket socket;
 	static List<String> my_nebr = new ArrayList<String>();
@@ -102,22 +103,35 @@ class dproc {
 		System.out.println("");
 
 		// If the node is the coordinator then start listener.
-		if (is_coord) {
-			coord_register_new();
+		Thread start = new Thread() {
+			public void run() {
+				try {
+					if (is_coord) {
+						coord_register_new();
 
-			// If the node is not the coordinator send register.
-		} else {
-			process_register();
-		}
+						// If the node is not the coordinator send register.
+					} else {
+						process_register();
+						recv_msg();
+					}
+					System.out.println("Register thread exited");
+				} catch (IOException e) {
+					// TODO Auto-generated catch block
+					e.printStackTrace();
+				}
+			}
+		};
+		start.start();
 
 		// Implement the working of the node.
-		/*
-		 * while (clock < terminate) {
-		 * 
-		 * clock++; // Increment the logical clock of the Process.
-		 * 
-		 * }
-		 */
+		if (reg_complete) {
+			while (clock < terminate) {
+				System.out.println("CLOCK STARTED");
+				clock++; // Increment the logical clock of the Process.
+
+			}
+		}
+
 	}
 
 	// Send a message to another process.
@@ -126,7 +140,7 @@ class dproc {
 
 			InetAddress address = InetAddress.getByName(host);
 			socket = new Socket(address, port);
-
+			socket.setReuseAddress(true);
 			// Send the message to the host
 			OutputStream os = socket.getOutputStream();
 			OutputStreamWriter osw = new OutputStreamWriter(os);
@@ -153,68 +167,102 @@ class dproc {
 	public static void recv_msg() throws IOException {
 
 		String message = "";
-		Socket socket = null;
 		try {
 
-			int port = 24100;
+			int port = 25555;		
 			ServerSocket serverSocket = new ServerSocket(port);
-			System.out.println("Process listening to the port 24100");
+			System.out.println("Process listening to the port 25555");
 
 			// Process is listening for new messages after registeration.
 			while (true) {
 
 				// Reading the message from the other process.
 				socket = serverSocket.accept();
+				socket.setReuseAddress(true);
 				InputStream is = socket.getInputStream();
+				String hostName = socket.getInetAddress().getHostName();
 				InputStreamReader isr = new InputStreamReader(is);
 				BufferedReader br = new BufferedReader(isr);
 				message = br.readLine();
-				System.out.println("Message received is " + message);
+				System.out.println("Message received from " + hostName + " is "
+						+ message);
+				msg_type(message);
 
-				// On Receiving a hostnames from store in map.
-				if (message.split(" ")[0].equalsIgnoreCase("hostnames")) {
-					String[] list = message.split(" ");
-					for (int i = 1; i < list.length; i++) {
-						String id = list[i];
-						i++;
-						if (!list[i].isEmpty()) {
-							my_nebr_hostnames.put(id, list[i]);
-						}
-					}
-					System.out.print(my_nebr_hostnames);
-					System.out.println("");
-					send_hello();
-				}
-
-				// On Receiving a hello message from a channel store count.
-				// Send ready if all hello messages received.
-				if (message.equalsIgnoreCase("hello")) {
-					hello_count++;
-					if (hello_count == my_nebr.size()) {
-						send_ready();
-					}
-				}
-				// On Receiving compute message.
-				if (message.equalsIgnoreCase("compute")) {
-					compute();
-				}
-				// On Receiving marker record the state.
-				if (message.equalsIgnoreCase("marker")) {
-					int number = Integer.valueOf(message);
-					record(number);
-				}
 			}
 		} catch (Exception exception) {
 			exception.printStackTrace();
 		} finally {
 			// Closing the socket
 			try {
-				socket.close();
+				socket.close();				
 			} catch (Exception e) {
 				e.printStackTrace();
 			}
 		}
 
+	}
+
+	// Perform some action depending on the type of the message received.
+	public static void msg_type(String message) throws IOException {
+		// On Receiving a hostnames from store in map.
+		if (message.split(" ")[0].equalsIgnoreCase("hostnames")) {
+			String[] list = message.split(" ");
+			for (int i = 1; i < list.length - 1; i++) {
+				String id = list[i];
+				i++;
+				if (!list[i].isEmpty()) {
+					my_nebr_hostnames.put(id, list[i]);
+				}
+			}
+			reg_complete = true;
+			System.out.print(my_nebr_hostnames);
+			System.out.println("");
+			Thread one = new Thread() {
+				public void run() {
+					send_hello();
+				}
+			};
+			one.start();
+		}
+
+		// On Receiving a hello message from a channel store count.
+		// Send ready if all hello messages received.
+		if (message.equalsIgnoreCase("hello")) {
+			hello_count++;
+			if (hello_count == my_nebr.size()) {
+				Thread one = new Thread() {
+					public void run() {
+						send_ready();
+					}
+				};
+				one.start();
+			}
+		}
+
+		// On receiving ready messages.
+		if (is_coord) {
+			if (message.equalsIgnoreCase("ready")) {
+				ready_process++;
+				if (ready_process == no_process) {
+					Thread one = new Thread() {
+						public void run() {
+							start_compute();
+							compute();
+						}
+					};
+					one.start();
+				}
+			}
+		}
+		// On Receiving compute message.
+		if (message.equalsIgnoreCase("compute")) {
+			compute();
+		}
+		// On Receiving marker record the state.
+		if (message.equalsIgnoreCase("marker")) {
+			int number = Integer.valueOf(message);
+			record(number);
+		}
 	}
 
 	// Send the inital register message to the coordinator
@@ -223,10 +271,10 @@ class dproc {
 
 		if (!is_coord) {
 			String msg = "REGISTER";
-			int port = 24100;
+			int port = 25555;
 			String host = coordinator + ".utdallas.edu";
 			try {
-
+				socket.setReuseAddress(true);	
 				InetAddress address = InetAddress.getByName(host);
 				socket = new Socket(address, port);
 
@@ -283,16 +331,17 @@ class dproc {
 	public static void coord_register_new() throws IOException {
 
 		try {
-
-			int port = 24100;
+			
+			int port = 25555;
 			ServerSocket serverSocket = new ServerSocket(port);
-			System.out.println("Coordinator listening to the port 24100");
+			System.out.println("Coordinator listening to the port 25555");
 
 			// Coordinator is listening always for new process registering.
 			while (true) {
 
 				// Reading the message from the other process.
 				socket = serverSocket.accept();
+				socket.setReuseAddress(true);
 				String hostName = socket.getInetAddress().getHostName();
 				InputStream is = socket.getInputStream();
 				InputStreamReader isr = new InputStreamReader(is);
@@ -330,9 +379,25 @@ class dproc {
 						bw.flush();
 						socket.shutdownOutput();
 					}
+				} else {
+					msg_type(message);
 				}
-				if (active_process == no_process)
-					break;
+
+				if (active_process == no_process && !reg_complete) {
+					Thread send = new Thread() {
+						public void run() {
+							try {
+								send_hostnames();
+								send_hello();
+							} catch (IOException e) {
+								// TODO Auto-generated catch block
+								e.printStackTrace();
+							}
+						}
+					};
+					send.start();
+					reg_complete = true;
+				}
 			}
 		} catch (Exception e) {
 			e.printStackTrace();
@@ -342,11 +407,6 @@ class dproc {
 			} catch (Exception e) {
 			}
 		}
-
-		// Check no. of the active processes
-		if (active_process == no_process) {
-			send_hostnames();
-		}
 	}
 
 	// Send the hostnames of the neighbours to registered processes
@@ -355,20 +415,30 @@ class dproc {
 
 		// If all processes sent the register message and coordinator
 		// knows everyone's hostname.
+
 		if (active_process == no_process) {
 
+			// Coordinator registers its own neighbours
+			if (is_coord) {
+				for (int i = 0; i < nebr_list.get("1").size(); i++) {
+					String id = nebr_list.get("1").get(i);
+					String host = (String) id_hostnames.get(id);
+					my_nebr_hostnames.put(id, host);
+				}
+			}
+
+			// Send hostnames of neightbours to processes.
 			for (int i = 2; i <= no_process; i++) {
-				String message = "Hostnames ";
+				String message = "Hostnames";
 				int size = nebr_list.get("" + i).size();
 				for (int j = 0; j < size; j++) {
 					String id = nebr_list.get("" + i).get(j);
 					String host = (String) id_hostnames.get(id);
-					message = message + " " + id + " " + host + " ";
+					message = message + " " + id + " " + host;
 				}
-				send_msg(id_hostnames.get("" + i), 24100, message);
+				send_msg(id_hostnames.get("" + i), 25555, message);
 			}
 		}
-		recv_msg();
 	}
 
 	// Send a hello message to all the neighbours.
@@ -380,15 +450,17 @@ class dproc {
 			String id = (String) pair.getKey();
 			String host = (String) pair.getValue();
 			String msg = "HELLO";
-			send_msg(host, 24100, msg);
+			send_msg(host, 25555, msg);
 		}
 	}
 
 	// Send a ready message to coordinator after verifying all hello messages.
 	public static void send_ready() {
-
-		String msg = "READY";
-		send_msg(coordinator, 0, msg);
+		if (!is_coord) {
+			String msg = "READY";
+			send_msg(coordinator, 25555, msg);
+			System.out.println("Sent READY to the coordinator.");
+		}
 	}
 
 	// Send the compute message after receiving all ready messages.
@@ -401,7 +473,7 @@ class dproc {
 				String id = (String) pair.getKey();
 				String host = (String) pair.getValue();
 				String msg = "COMPUTE";
-				send_msg(host, 0, msg);
+				send_msg(host, 25555, msg);
 			}
 		}
 	}
@@ -427,7 +499,7 @@ class dproc {
 
 			// Send a message to the node with that id.
 			String message = "COMPUTE";
-			send_msg(my_nebr_hostnames.get(id), 0, message);
+			send_msg(my_nebr_hostnames.get(id), 25555, message);
 		}
 	}
 
